@@ -29,6 +29,7 @@ class Chat:
     last_message: Optional[str] = None
     last_sender: Optional[str] = None
     last_is_from_me: Optional[bool] = None
+    is_archived: bool = False
 
     @property
     def is_group(self) -> bool:
@@ -321,7 +322,8 @@ def list_chats(
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
-    sort_by: str = "last_active"
+    sort_by: str = "last_active",
+    archived: Optional[bool] = None
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
     try:
@@ -334,6 +336,7 @@ def list_chats(
                 chats.jid,
                 chats.name,
                 chats.last_message_time,
+                chats.is_archived,
                 messages.content as last_message,
                 messages.sender as last_sender,
                 messages.is_from_me as last_is_from_me
@@ -352,6 +355,10 @@ def list_chats(
         if query:
             where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
             params.extend([f"%{query}%", f"%{query}%"])
+            
+        if archived is not None:
+            where_clauses.append("chats.is_archived = ?")
+            params.append(1 if archived else 0)
             
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -374,9 +381,10 @@ def list_chats(
                 jid=chat_data[0],
                 name=chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-                last_message=chat_data[3],
-                last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
+                last_message=chat_data[4],
+                last_sender=chat_data[5],
+                last_is_from_me=chat_data[6],
+                is_archived=bool(chat_data[3])
             )
             result.append(chat)
             

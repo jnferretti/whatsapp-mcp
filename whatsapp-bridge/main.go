@@ -90,6 +90,9 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
+	// Migration: add is_archived column if missing
+	db.Exec(`ALTER TABLE chats ADD COLUMN is_archived BOOLEAN DEFAULT FALSE`)
+
 	return &MessageStore{db: db}, nil
 }
 
@@ -103,6 +106,15 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	_, err := store.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
 		jid, name, lastMessageTime,
+	)
+	return err
+}
+
+// Update the archived status of a chat
+func (store *MessageStore) SetChatArchived(jid string, archived bool) error {
+	_, err := store.db.Exec(
+		"UPDATE chats SET is_archived = ? WHERE jid = ?",
+		archived, jid,
 	)
 	return err
 }
@@ -641,7 +653,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -800,14 +812,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -841,6 +853,11 @@ func main() {
 			// Process regular messages
 			handleMessage(client, messageStore, v, logger)
 
+		case *events.Archive:
+			if v.Action != nil && v.Action.Archived != nil {
+				messageStore.SetChatArchived(v.JID.String(), v.Action.GetArchived())
+				logger.Infof("Chat %s archived status changed to: %v", v.JID.String(), v.Action.GetArchived())
+			}
 		case *events.HistorySync:
 			// Process history sync events
 			handleHistorySync(client, messageStore, v, logger)
@@ -973,7 +990,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1005,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
@@ -1046,6 +1063,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			}
 
 			messageStore.StoreChat(chatJID, name, timestamp)
+			if conversation.Archived != nil {
+				messageStore.SetChatArchived(chatJID, conversation.GetArchived())
+			}
 
 			// Store messages
 			for _, msg := range messages {
